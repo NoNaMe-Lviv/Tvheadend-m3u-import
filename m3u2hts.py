@@ -12,11 +12,61 @@ import collections
 
 
 def get_uuid():
+    ''' create 16 random chars '''
     return uuid.uuid4().hex
 
 
-def write_service_data(serviceid, muxid, working_dir, tvg_name_safe, network):
-    # create service
+def valid_hts_path(hts_home):
+    ''' check, if the given path to tvheadend is valid '''
+    if not os.path.exists(hts_home):
+        logging.error('Wrong path to tvheadend files.')
+        return False
+    if os.isfile(os.path.join(hts_home, 'hts.log')) and os.path.exists(os.path.join(hts_home, 'input')):
+        logging.info('Path to tvheadend is correct.')
+        return True
+
+
+def check_channel_dir(hts_home):
+    ''' check, if channel directory exists '''
+    try:
+        channel_dir = os.path.join(hts_home, 'channel')
+        if not os.path.exists(channel_dir):
+            os.mkdir(channel_dir)
+
+        config_dir = os.path.join(channel_dir, 'config')
+        if not os.path.exists(config_dir):
+            os.mkdir(config_dir)
+
+        return True
+    except OSError:
+        logging.error('Could not write %s. No Permissions', config_dir)
+        return False
+
+
+def create_networks_config(networks_path, networkid, network_name, charset):
+    ''' create the config file in networks directory '''
+    network_config = collections.OrderedDict([("priority", 1),
+                                             ("spriority", 1),
+                                             ("max_streams", 0),
+                                             ("max_bandwidth", 0),
+                                             ("max_timeout", 60),
+                                             ("networkname", network_name),
+                                             ("nid", 0),
+                                             ("autodiscovery", False),
+                                             ("skipinitscan", True),
+                                             ("idlescan", False),
+                                             ("sid_chnum", False),
+                                             ("ignore_chnum", False),
+                                             ("satip_source", 0),
+                                             ("charset", charset),
+                                             ("localtime", False)])
+
+    with open(os.path.join(networks_path, networkid)) as f:
+        json.dump(network_config, f, indent=8)
+
+
+def write_service_data(serviceid, muxid, working_dir, tvg_name_safe, network, charset):
+    ''' write the service data into a file '''
     service_data = collections.OrderedDict([("sid", 1),
                                             ("lcn", 0),
                                             ("lcn_minor", 0),
@@ -25,6 +75,7 @@ def write_service_data(serviceid, muxid, working_dir, tvg_name_safe, network):
                                             ("provider", network),
                                             ("dvb_servicetype", 1),
                                             ("dvb_ignore_eit", False),
+                                            ("charset", charset)
                                             ("prefcapid", 0),
                                             ("prefcapid_lock", 0),
                                             ("force_caid", 0),
@@ -42,18 +93,21 @@ def write_service_data(serviceid, muxid, working_dir, tvg_name_safe, network):
                                                                                  ("type", "AAC-LATM"),
                                                                                  ("position", 0),
                                                                                  ("audio_type", 0)])])])
+    # FIXME: not performant
     if not os.path.exists(os.path.join(working_dir, muxid, 'services')):
         os.mkdir(os.path.join(working_dir, muxid, 'services'))
     with open(os.path.join(working_dir, muxid, 'services', serviceid), 'w') as f:
         json.dump(service_data, f, indent=8)
 
 
-def write_mux_data(tvg_name_safe, url, interface, tvg_name, working_dir, muxid):
+def write_mux_data(tvg_name_safe, url, interface, tvg_name, working_dir, muxid, charset):
+    ''' write the mux data into a file '''
     config_data = collections.OrderedDict([("priority", 0),
                                            ("spriority", 0),
                                            ("iptv_url", "pipe://ffpipe.sh " + tvg_name_safe + " " + url),
                                            ("iptv_interface", interface),
                                            ("iptv_atsc", False),
+                                           ("charset", charset)
                                            ("iptv_muxname", tvg_name),
                                            ("iptv_sname", tvg_name),
                                            ("iptv_respawn", True),
@@ -64,10 +118,27 @@ def write_mux_data(tvg_name_safe, url, interface, tvg_name, working_dir, muxid):
                                            ("scan_result", 1),
                                            ("pmt_06_ac3", 0)])
 
+    # FIXME: not performant
     if not os.path.exists(os.path.join(working_dir, muxid)):
         os.mkdir(os.path.join(working_dir, muxid))
     with open(os.path.join(working_dir, muxid, 'config'), 'w') as f:
         json.dump(config_data, f, indent=8)
+
+
+def write_channel_data(hts_home, channelid, tvg_name, channel_number, serviceid):
+    ''' write channel data into a file '''
+    channel_data = collections.OrderedDict([("enabled", True),
+                                            ("name", tvg_name),
+                                            ("number", channel_number),
+                                            ("epgauto", False),
+                                            ("dvr_pre_time", 0),
+                                            ("dvr_pst_time", 0),
+                                            ("services", [serviceid]),
+                                            ("tags", []),
+                                            ("bouquet", "")])
+
+    with open(os.path.join(hts_home, 'channel', 'config', channelid), 'w') as f:
+        json.dump(channel_data, f, indent=8)
 
 
 def read_m3u(m3u, lang):
@@ -106,23 +177,56 @@ def read_m3u(m3u, lang):
     return mux_info
 
 
-def create_files(muxes_info, interface, network):
+def search_for_networks(hts_home, network_name):
+    ''' search for existing networks
+        INFO: can only handle one network correct for now '''
+    networkid = ''
+    input_path = os.path.join(hts_home, 'input')
+
+    iptv_path = os.path.join(input_path, 'iptv')
+    if not os.path.exists(iptv_path):
+        os.mkdir(iptv_path)
+        logging.debug('Could not find %s folder. Creating.', iptv_path)
+
+    networks_path = os.path.join(input_path, 'iptv', 'networks')
+    if not os.path.exists(networks_path):
+        os.mkdir(networks_path)
+        logging.debug('Could not find %s folder. Creating.', networks_path)
+
+    iptv_networks = os.listdir(os.path.join(networks_path))
+    if len(iptv_networks) == 0:
+        networkid = get_uuid()
+        os.mkdir(os.path.join(networks_path, networkid))
+        create_networks_config(networks_path, networkid, network_name)
+    else:
+        networkid = iptv_networks[0]
+
+    logging.debug('Network ID is: %s', networkid)
+
+    return networkid
+
+
+def create_files(muxes_info, interface, network_name, hts_home):
+    ''' create config files for muxes, services and channels '''
     logging.info('Creating muxes and services.')
-    #working_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'muxes')
-    # /home/hts/.hts/tvheadend/input/iptv/networks/140a0de3af80e879b861e63d3791ac30/
-    working_dir = os.path.join('/home', 'hts', '.hts', 'tvheadend', 'input', 'iptv', 'networks', '140a0de3af80e879b861e63d3791ac30', 'muxes')
+    networkid = search_for_networks(hts_home, network_name)
+    working_dir = os.path.join(hts_home, 'input', 'iptv', 'networks', networkid, 'muxes')
     if not os.path.exists(working_dir):
         os.mkdir(working_dir)
 
     for key, values in muxes_info.items():
-        _, _, _, tvg_name, url = values[0], values[1], values[2], values[3], values[4]
+        # TODO: change tvg_name for service/muxes, so that tvh can auto assign the epg
+        channel_number, _, _, tvg_name, url = values[0], values[1], values[2], values[3], values[4]
         tvg_name_safe = tvg_name.upper().replace(' ', '_').replace('Ä', 'AE').replace('Ö', 'OE').replace('Ü', 'UE').replace('ß', 'SS')
 
         muxid = get_uuid()
         write_mux_data(tvg_name_safe, url, interface, tvg_name, working_dir, muxid)
 
         serviceid = get_uuid()
-        write_service_data(serviceid, muxid, working_dir, tvg_name_safe, network)
+        write_service_data(serviceid, muxid, working_dir, tvg_name_safe, network_name)
+
+        channelid = get_uuid()
+        write_channel_data(hts_home, channelid, tvg_name, int(channel_number), serviceid)
 
 
 def main():
@@ -131,6 +235,7 @@ def main():
     parser.add_argument('-i', '--interface', action='store', default='eth0', help='Name of interface. [default: %(default)s].')
     parser.add_argument('-n', '--network', action='store', default='IPTV', help='Name of IPTV network. [default: %(default)s].')
     parser.add_argument('-l', '--language', nargs='+', type=str, choices=['DE', 'AT', 'CH', 'FR', 'NE', 'UK', 'IT', 'TR', 'RU', 'CZ'], default=['DE', 'AT', 'CH'], help='Only extract channels in that language. [default: %(default)s].')
+    parser.add_argument('-c', '--charset', choices=['AUTO', 'ISO-6937', 'ISO-8859-1', 'UTF-8', 'GB2312', 'UCS2', 'AUTO_POLISH'], default='UTF-8', help='Set charset. [default: %(default)s].')
     parser.add_argument('-d', '--dir', default='/home/hts/.hts/tvheadend', help='Path to tvheadend directory. [default: %(default)s].')
     parser.add_argument('-v', '--verbose', help='Be Verbose', action='store_true')
     args = parser.parse_args()
@@ -140,11 +245,15 @@ def main():
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG, format='%(asctime)s:%(levelname)s:%(message)s', datefmt='%H:%M:%S')
     else:
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', datefmt='%H:%M:%S')
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s', datefmt='%H:%M:%S')
+
+    if not valid_hts_path(args.dir):
+        sys.exit(-1)
 
     if args.m3u_file is not None:
-        muxes_info = read_m3u(args.m3u_file, args.language)
-        create_files(muxes_info, args.interface, args.network)
+        if check_channel_dir(args.dir):
+            muxes_info = read_m3u(args.m3u_file, args.language)
+            create_files(muxes_info, args.interface, args.network, args.dir)
     else:
         logging.error("No m3u specified!")
 
