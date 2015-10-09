@@ -240,8 +240,8 @@ def create_files(muxes_info, interface, network_name, hts_home, charset):
     if not os.path.exists(working_dir):
         os.mkdir(working_dir)
 
-    for key, values in muxes_info.items():
-        channel_number, tvg_id, tvg_name, url = key, values[1], values[2], values[3]
+    for i, values in enumerate(muxes_info.values()):
+        channel_number, tvg_id, tvg_name, url = i, values[1], values[2], values[3]
         tvg_name_safe = tvg_name.upper().replace(' ', '_').replace('Ä', 'AE').replace('Ö', 'OE').replace('Ü', 'UE').replace('ß', 'SS')
 
         muxid = get_uuid()
